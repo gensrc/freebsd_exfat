@@ -1,0 +1,174 @@
+.\"
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+.\" ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+.\" IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+.\" ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+.\" FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+.\" DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+.\" OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+.\" HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+.\" LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.Dd November 14, 2026
+.Dt NEWFS_EXFAT 8
+.Os
+.Sh NAME
+.Nm newfs_exfat
+.Nd construct a new exFAT file system
+.Sh SYNOPSIS
+.Nm
+.Op Fl Nv
+.Op Fl C Ar create-size
+.Op Fl c Ar cluster-size
+.Op Fl I Ar volume-id
+.Op Fl L Ar label
+.Op Fl p Ar partition-offset
+.Op Fl S Ar sector-size
+.Op Fl s Ar size
+.Ar special
+.Sh DESCRIPTION
+The
+.Nm
+utility initializes an exFAT
+file system on the device or image file specified by
+.Ar special .
+.Pp
+The layout created follows the official exFAT specification:
+.Bl -bullet
+.It
+Main Volume Boot Record (VBR) consisting of sectors 0 through 11, including
+the primary boot sector, extended boot sectors, OEM parameter sector, and
+a 32-bit checksum sector covering the entire boot sequence.
+.It
+Backup Volume Boot Record consisting of sectors 12 through 23 duplicating the
+Main VBR.
+.It
+File Allocation Table (FAT) mapping cluster connectivity, located at a sector
+offset of at least 24 per section 3.1.6 of the exFAT specification.
+.It
+Cluster heap aligned to the cluster boundary per section 3.1.8 of the exFAT
+specification, containing initial system files: Allocation Bitmap (type 0x81),
+standard compressed Unicode Up-Case Table (type 0x82), and the Root
+Directory containing the Volume Label (type 0x83) and system pointers.
+.El
+.Pp
+Volumes must be at least 1 MiB in size per section 3.1.5 of the exFAT
+specification.
+The cluster count is bounded between 1 and 4,294,967,285
+.Pq 2^32 - 11
+per section 3.1.9 of the exFAT specification.
+.Pp
+The options are as follows:
+.Bl -tag -width indent
+.It Fl C Ar create-size
+Create a new file of the specified size before initializing the file system.
+The size may include suffix units such as
+.Ql k ,
+.Ql m ,
+.Ql g ,
+or
+.Ql t .
+The create size must be at least 1 MiB.
+.It Fl c Ar cluster-size
+Specify the cluster size in bytes, or if 128 or less, the number of sectors
+per cluster.
+The size may include suffix units such as
+.Ql k
+or
+.Ql m .
+If not specified, a default cluster size is chosen according to volume size:
+4 KiB for volumes smaller than 256 MiB, 32 KiB for volumes up to 32 GiB,
+and for larger volumes, 128 KiB capped at the system buffer cache maximum
+.Pq Va vfs.maxbcachebuf , typically 64 KiB
+to ensure compatibility with the
+.Fx
+kernel.
+If an explicit cluster size exceeding
+.Va vfs.maxbcachebuf
+is specified, a warning is issued that the volume will fail to mount on
+standard
+.Fx
+systems.
+The maximum cluster count supported by the exFAT specification is
+4,294,967,285
+.Pq 2^32 - 11 .
+FAT tables are formatted in streaming chunks, bounding memory usage during
+initialization regardless of volume size.
+.It Fl I Ar volume-id
+Specify the 32-bit volume serial number in decimal or hexadecimal.
+If omitted, a random serial number is generated.
+.It Fl L Ar label
+Specify the volume label, up to 11 characters in length.
+The label is stored in UTF-16LE in the root directory.
+Per section 7.2.3 of the exFAT specification, the label must not contain
+characters in the range 0x0000 through 0x001F or any of the characters:
+.Ql \&" ,
+.Ql * ,
+.Ql / ,
+.Ql : ,
+.Ql < ,
+.Ql > ,
+.Ql \&? ,
+.Ql \e ,
+or
+.Ql | .
+.It Fl N
+Do not create or write to the file system.
+Calculates and displays the computed geometry and layout parameters.
+.It Fl p Ar partition-offset
+Specify the volume-relative sector offset of the partition containing
+the exFAT volume.
+The default is 0.
+.It Fl S Ar sector-size
+Bytes per logical sector.
+Accepted values are 512, 1024, 2048, or 4096 bytes.
+When formatting a disk device, the sector size is automatically detected
+from the underlying device if not explicitly specified.
+Default is 512 bytes for file images.
+.It Fl s Ar size
+Specify the file system size in bytes or sectors.
+.It Fl v
+Verbose mode.
+Displays detailed sizing and cluster offsets.
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+Create a 64 MiB exFAT image file with volume label
+.Dq FLASHDRIVE :
+.Pp
+.Dl "# newfs_exfat -C 64M -L FLASHDRIVE /tmp/flash.img"
+.Pp
+Format a partition with 32 KiB clusters and display calculated parameters:
+.Pp
+.Dl "# newfs_exfat -v -c 32k -L USBDRV /dev/da0s1"
+.Sh SEE ALSO
+.Xr exfat 4 ,
+.Xr fsck_exfat 8 ,
+.Xr glabel 8 ,
+.Xr mount_exfat 8 ,
+.Xr newfs_msdos 8
+.Sh HISTORY
+The
+.Nm
+utility first appeared in
+.Fx 15.1 .
+.Sh AUTHORS
+The
+.Nm
+utility was developed for the
+.Fx
+Project.

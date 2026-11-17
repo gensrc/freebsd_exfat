@@ -1,0 +1,261 @@
+.\"
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+.\" ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+.\" IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+.\" ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+.\" FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+.\" DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+.\" OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+.\" HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+.\" LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.Dd November 16, 2026
+.Dt EXFAT 4
+.Os
+.Sh NAME
+.Nm exfat
+.Nd "Extended File Allocation Table file system"
+.Sh SYNOPSIS
+To link into the kernel:
+.Bd -ragged -offset indent
+.Cd "options EXFAT"
+.Ed
+.Pp
+To load as a loadable kernel module:
+.Pp
+.Dl "kldload exfat"
+.Sh DESCRIPTION
+The
+.Nm
+driver permits the
+.Fx
+kernel to read and write exFAT (Extended File Allocation Table) file systems.
+.Pp
+The exFAT file system is commonly used on high-capacity flash storage media,
+such as SDXC cards and USB flash drives, where the 4 GiB maximum file size
+and 2 TiB volume size limitations of FAT32 are restrictive.
+.Pp
+Features supported by the
+.Nm
+driver include:
+.Bl -bullet
+.It
+Full read and write capabilities.
+.It
+Support for file and volume sizes up to the theoretical exFAT
+specification limits.
+.It
+Cluster sizes ranging from 512 bytes up to 32 MiB (kernel mounts are
+constrained by the maximum buffer cache block size,
+.Va vfs.maxbcachebuf ,
+typically 64 KiB).
+.It
+Contiguous cluster allocation optimization bypassing FAT chain traversal
+when the stream allocation possible flag is set.
+.It
+Full Unicode support with case-insensitive, case-preserving filename lookups
+using the volume's on-disk Up-Case table.
+.It
+Lockless fast-path namecache lookup
+.Pq Xr cache_fplookup 9
+under VFS Safe Memory Reclamation (SMR).
+.It
+Directory entry sets that span across cluster boundaries.
+.It
+Dynamic allocation bitmap management and cluster heap synchronization.
+.It
+Clean unmount volume dirty state clearing and
+.Va PercentInUse
+boot sector statistics maintenance.
+.It
+Validation of 32-bit Boot Region Checksums on mount with automatic fallback
+to the Backup Boot Region when the Main Boot Region is corrupted.
+.It
+Directory cluster reclamation and truncation on unlink.
+.It
+Enforcement of
+.Va ActiveFat
+constraints per exFAT specification section 3.1.13.1, rejecting volumes with
+.Er EINVAL
+if
+.Va ActiveFat
+is set on single-FAT file systems.
+.It
+Strict compliance with directory entry classification rules (sections 6.2
+and 6.3), rejecting access on unrecognized critical entries and passing
+through recognized benign entries (such as Volume GUID and TexFAT Padding).
+.It
+Valid Data Length
+.Pq Va ValidDataLength
+tracking and safe sparse gap zero-filling up to
+.Va DataLength
+prior to committing payload data.
+.It
+Automatic read-only mounting of Transactional exFAT
+.Pq TexFAT
+volumes formatted with two File Allocation Tables
+.Pq Li NumberOfFATs = 2
+to preserve filesystem consistency.
+.It
+Sparse stream querying via
+.Xr lseek 2
+.Pq Dv SEEK_DATA No and Dv SEEK_HOLE
+and
+.Xr ioctl 2
+.Pq Dv FIOSEEKDATA No and Dv FIOSEEKHOLE
+leveraging the stream
+.Va ValidDataLength
+boundary.
+.It
+NFS export and cold filehandle lookup
+.Pq Xr fhtovp 9 .
+.It
+GEOM label detection
+.Pq Pa /dev/exfat/<label> .
+.El
+.Sh MOUNT OPTIONS
+The following options can be passed to
+.Xr mount 8
+or
+.Xr mount_exfat 8 :
+.Bl -tag -width indent
+.It Cm ro
+Mount the file system read-only.
+.It Cm rw
+Mount the file system read-write (default).
+.It Cm sync
+Perform all file system I/O operations synchronously.
+.It Cm noatime
+Do not update file access timestamps on reads.
+.It Cm uid Ns = Ns Ar uid
+Set the owner of all files in the file system to
+.Ar uid .
+The default is 0 (root).
+.It Cm gid Ns = Ns Ar gid
+Set the group owner of all files in the file system to
+.Ar gid .
+The default is 0 (wheel).
+.It Cm mask Ns = Ns Ar mask
+Specify the maximum file permissions mask.
+The default is 0755.
+.It Cm dirmask Ns = Ns Ar dirmask
+Specify the maximum directory permissions mask.
+The default is 0755.
+.It Cm notrim
+Do not issue TRIM commands when clusters are freed (default).
+.It Cm trim
+Issue
+.Dv BIO_DELETE
+(TRIM) commands to the underlying storage device when clusters are freed.
+.El
+.Sh IOCTLS
+The following file-system-specific
+.Xr ioctl 2
+calls apply to files and directories on mounted
+.Nm
+file systems and are defined in the
+.In fs/exfat/exfat_ioctl.h
+header file:
+.Bl -tag -width EXFATIOC_GETLABEL
+.It Dv EXFATIOC_GETLABEL
+.Pq Li "char[EXFAT_MAX_LABEL_LEN]"
+Retrieve the volume label of the mounted file system.
+The caller passes a character array of size
+.Dv EXFAT_MAX_LABEL_LEN
+(64 bytes).
+Upon return, the buffer contains the NUL-terminated UTF-8 representation of the
+on-disk volume label (up to 11 Unicode characters).
+If the file system has no volume label, an empty string is returned.
+.It Dv EXFATIOC_SETLABEL
+.Pq Li "char[EXFAT_MAX_LABEL_LEN]"
+Set or clear the volume label of the mounted file system.
+The caller passes a NUL-terminated UTF-8 string of up to 11 Unicode
+characters.
+If an empty string
+.Pq Qq ""
+is passed, the existing volume label entry is deleted.
+This operation requires administrative privilege
+.Pq Dv PRIV_VFS_ADMIN
+unless invoked by the file system mount owner, and fails with
+.Er EROFS
+if the file system is mounted read-only.
+.El
+.Pp
+In addition, the following standard descriptor ioctl calls defined in
+.In sys/filio.h
+are supported on regular files:
+.Bl -tag -width FIOSEEKDATA
+.It Dv FIOSEEKDATA
+.Pq Li "off_t"
+Seek to the next data byte at or after the specified offset.
+Offsets within valid data
+.Pq below Va ValidDataLength
+are unchanged; offsets at or beyond
+.Va ValidDataLength
+fail with
+.Er ENXIO .
+.It Dv FIOSEEKHOLE
+.Pq Li "off_t"
+Seek to the next hole byte at or after the specified offset.
+If the offset lies within valid data, returns
+.Va ValidDataLength ;
+otherwise returns the offset unchanged.
+.El
+.Sh EXAMPLES
+Mount an exFAT partition located on
+.Pa /dev/da0s1 :
+.Pp
+.Dl "mount -t exfat /dev/da0s1 /mnt"
+.Pp
+Mount an exFAT volume using its GEOM volume label:
+.Pp
+.Dl "mount -t exfat /dev/exfat/FLASHDRIVE /mnt"
+.Pp
+Mount an exFAT volume read-only with a custom owner and permission mask:
+.Pp
+.Dl "mount -t exfat -o ro,uid=1001,mask=0750 /dev/da0s1 /mnt"
+.Pp
+An entry in
+.Pa /etc/fstab
+can be configured as follows:
+.Bd -literal -offset indent
+/dev/da0s1	/mnt/flash	exfat	rw,noatime	0	0
+.Ed
+.Sh SEE ALSO
+.Xr ioctl 2 ,
+.Xr lseek 2 ,
+.Xr fstab 5 ,
+.Xr fsck_exfat 8 ,
+.Xr glabel 8 ,
+.Xr mount 8 ,
+.Xr mount_exfat 8 ,
+.Xr newfs_exfat 8 ,
+.Xr cache_fplookup 9
+.Sh STANDARDS
+The
+.Nm
+file system conforms to the official Microsoft exFAT File System
+Specification.
+.Sh HISTORY
+The
+.Nm
+driver first appeared in
+.Fx 15.1 .
+.Sh AUTHORS
+The
+.Nm
+kernel driver and associated userland utilities were implemented for
+.Fx .

@@ -1,0 +1,225 @@
+.\"
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+.\" ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+.\" IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+.\" ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+.\" FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+.\" DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+.\" OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+.\" HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+.\" LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.Dd November 14, 2026
+.Dt MOUNT_EXFAT 8
+.Os
+.Sh NAME
+.Nm mount_exfat
+.Nd mount an exFAT file system
+.Sh SYNOPSIS
+.Nm
+.Op Fl r
+.Op Fl w
+.Op Fl g Ar gid
+.Op Fl M Ar mask
+.Op Fl m Ar mask
+.Op Fl o Ar options
+.Op Fl u Ar uid
+.Ar special node
+.Sh DESCRIPTION
+The
+.Nm
+utility attaches the exFAT file system residing on
+the device
+.Pa special
+to the global file system namespace at the location
+indicated by
+.Pa node .
+This command is normally executed by
+.Xr mount 8
+at boot time or manually to mount an exFAT volume.
+.Pp
+Prior to mounting, the driver computes and validates the 32-bit Boot Region
+Checksum across the boot sub-regions.
+If the Main Boot Region fails checksum or structure validation, the driver
+automatically falls back to the Backup Boot Region and forces a read-only
+mount with the volume dirty flag set.
+If both the Main and Backup Boot Regions are corrupted, the mount operation
+fails with
+.Er EINVAL .
+.Pp
+Transactional exFAT
+.Pq TexFAT
+volumes formatted with two File Allocation Tables
+.Pq Li NumberOfFATs = 2
+are automatically mounted read-only to preserve filesystem consistency.
+Attempts to remount such volumes read-write using
+.Xr mount 8
+.Pq Fl u Cm rw
+are rejected with
+.Er EROFS .
+.Pp
+Per section 3.1.13.1 of the exFAT specification, volumes formatted with a single
+File Allocation Table
+.Pq Li NumberOfFATs = 1
+must have
+.Va ActiveFat
+cleared in
+.Va VolumeFlags .
+If
+.Va ActiveFat
+is set on a single-FAT volume, the mount operation fails with
+.Er EINVAL .
+.Pp
+Per section 3.1.13.4 of the exFAT specification, volumes with
+.Va ClearToZero
+set in
+.Va VolumeFlags
+require reformatting before mounting and are rejected with
+.Er EINVAL .
+.Pp
+Per section 6.2.1 of the exFAT specification, file system operations reject
+unrecognized critical primary directory entries (entry type codes 0x80 through
+0x9F) with
+.Er EINVAL .
+Benign primary directory entries (type codes 0xA0 through 0xBF), such as
+Volume GUID and TexFAT Padding entries, are safely ignored during lookups.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl g Ar gid
+Set the group of the files in the file system to
+.Ar gid .
+The argument may be a group name or a numeric group ID.
+The default group is the group of the directory
+on which the file system is being mounted.
+.It Fl M Ar mask
+Specify the maximum file permissions for directories
+in the file system.
+The value is specified in octal (e.g., 755 or 0755).
+If
+.Fl M
+is specified without
+.Fl m ,
+the file permission mask defaults to the directory mask.
+If neither is specified, the default directory mask is inherited from the mount
+point.
+.It Fl m Ar mask
+Specify the maximum file permissions for regular files
+in the file system.
+The value is specified in octal (e.g., 755 or 0755).
+If
+.Fl m
+is specified without
+.Fl M ,
+the directory permission mask defaults to the file mask.
+If neither is specified, the default file mask is inherited from the mount
+point.
+.It Fl o Ar options
+Use the specified mount options, as described in
+.Xr mount 8 .
+Multiple options may be specified as a comma-separated list.
+The following file-system-specific options are available:
+.Bl -tag -width "dirmask=mask"
+.It Cm dirmask Ns = Ns Ar mask
+Equivalent to
+.Fl M .
+.It Cm gid Ns = Ns Ar gid
+Equivalent to
+.Fl g .
+.It Cm mask Ns = Ns Ar mask
+Equivalent to
+.Fl m .
+.It Cm notrim
+Do not issue TRIM commands when clusters are freed (the default).
+.It Cm ro
+Mount the file system read-only.
+Equivalent to
+.Fl r .
+.It Cm rw
+Mount the file system read-write (the default).
+Equivalent to
+.Fl w .
+.It Cm trim
+Issue BIO_DELETE (TRIM/discard) commands to the underlying device
+when clusters are freed.
+.It Cm uid Ns = Ns Ar uid
+Equivalent to
+.Fl u .
+.It Cm update
+Equivalent to the
+.Fl u
+argument to
+.Xr mount 8 .
+Allows updating mount options (such as toggling read-only or read-write status)
+on an already mounted file system.
+.El
+.It Fl r
+Mount the file system read-only.
+This is equivalent to the
+.Cm ro
+argument to the
+.Fl o
+option.
+.It Fl u Ar uid
+Set the owner of the files in the file system to
+.Ar uid .
+The argument may be a user name or a numeric user ID.
+The default owner is the owner of the directory
+on which the file system is being mounted.
+.It Fl w
+Mount the file system read-write (the default).
+This is equivalent to the
+.Cm rw
+argument to the
+.Fl o
+option.
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+To mount an exFAT volume located on
+.Pa /dev/da0s1
+onto
+.Pa /mnt :
+.Pp
+.Dl "mount_exfat /dev/da0s1 /mnt"
+.Pp
+To mount an exFAT volume read-only:
+.Pp
+.Dl "mount_exfat -r /dev/da0s1 /mnt"
+.Pp
+To mount with specific user and permissions:
+.Pp
+.Dl "mount_exfat -u 1001 -g 1001 -m 755 -M 755 /dev/da0s1 /mnt"
+.Sh SEE ALSO
+.Xr nmount 2 ,
+.Xr exfat 4 ,
+.Xr fstab 5 ,
+.Xr fsck_exfat 8 ,
+.Xr glabel 8 ,
+.Xr mount 8 ,
+.Xr newfs_exfat 8
+.Sh HISTORY
+The
+.Nm
+utility first appeared in
+.Fx 15.1 .
+.Sh AUTHORS
+The
+.Nm
+utility was developed for the
+.Fx
+Project.

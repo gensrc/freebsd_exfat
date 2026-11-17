@@ -1,0 +1,364 @@
+.\"
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+.\" ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+.\" IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+.\" ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+.\" FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+.\" DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+.\" OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+.\" HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+.\" LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.Dd November 14, 2026
+.Dt FSCK_EXFAT 8
+.Os
+.Sh NAME
+.Nm fsck_exfat
+.Nd exFAT file system consistency checker and repair utility
+.Sh SYNOPSIS
+.Nm
+.Fl p
+.Op Fl BCFfvy
+.Ar filesystem ...
+.Nm
+.Op Fl BCFfnyv
+.Ar filesystem ...
+.Nm
+.Fl l
+.Ar filesystem ...
+.Nm
+.Fl L Ar label
+.Ar filesystem ...
+.Sh DESCRIPTION
+The
+.Nm
+utility verifies and repairs exFAT
+file systems.
+.Pp
+The first form of
+.Nm
+preens the specified file systems.
+It is normally started by
+.Xr fsck 8
+from
+.Pa /etc/rc
+during automatic reboot when an exFAT file system is detected.
+When preening file systems,
+.Nm
+will fix minor, non-destructive inconsistencies automatically.
+If potentially destructive repairs are required (such as removing
+corrupted directory entry sets or truncating cross-linked chains),
+.Nm
+will not modify those files and will exit with an error code indicating
+that manual intervention is required.
+.Pp
+The second form of
+.Nm
+checks the specified file systems interactively, requesting confirmation
+before making any modifications, unless the
+.Fl y
+or
+.Fl n
+options are specified.
+.Pp
+The consistency check is performed in four distinct phases:
+.Bl -tag -width "Phase 4"
+.It Sy "Phase 1 - Verifying Boot Sector and Volume Boot Record"
+Verifies the Main and Backup Volume Boot Records (VBRs), boot signatures,
+sector and cluster sizing, cluster count bounds, FAT and heap layout,
+volume geometry, and 32-bit boot region checksums
+across sectors 0 through 11 and 12 through 23.
+If one boot region is intact while the other is corrupted,
+.Nm
+offers to restore the damaged region from the valid copy.
+For single-FAT volumes
+.Pq Li NumberOfFats == 1 ,
+the
+.Va ActiveFat
+flag in
+.Va VolumeFlags
+is validated and cleared if improperly set per section 3.1.13.1.
+The
+.Va ClearToZero
+flag
+.Pq section 3.1.13.4
+and reserved bits in
+.Va VolumeFlags
+.Pq section 3.1.13.5
+are validated and cleared if set.
+For TexFAT volumes containing two file allocation tables
+.Pq NumberOfFats == 2 ,
+the active and secondary FAT tables are compared sector-by-sector and can
+be synchronized.
+Volume cleanliness
+.Pq EXFAT_VOL_DIRTY
+is evaluated; if the volume is clean and preening mode
+.Pq Fl p
+is active, further checks are skipped.
+.It Sy "Phase 2 - Scanning Volume Metadata"
+Locates and validates the root directory system entries: the Allocation
+Bitmap (entry type 0x81), the Up-Case Table (0x82), and the Volume Label
+(0x83), ensuring that the Volume Label contains valid characters per the
+specification and does not exceed 11 characters.
+Also validates recognized benign primary entries including Volume GUID (0xA0)
+and TexFAT Padding (0xA1) entries, ensuring that Volume GUID and TexFAT Padding
+entries have a secondary count of zero and primary flags of zero.
+TexFAT Padding entries have their reserved field zeroed if non-zero per
+section 7.10 of the exFAT specification.
+Volume GUID entries containing an all-zero GUID (null GUID) are detected
+and offered for removal or zeroing.
+If the Allocation Bitmap directory entry is missing,
+.Nm
+can recreate the entry and link it to the allocation bitmap clusters.
+If the Up-Case Table directory entry is missing or damaged,
+.Nm
+can generate and write a standard 128 KiB UTF-16 case folding table,
+compute its 32-bit boot checksum, and recreate the directory entry.
+The Up-Case table is decompressed, its checksum is verified, and the
+volume allocation bitmap is loaded into memory.
+.It Sy "Phase 3 - Checking Directory Tree and File Streams"
+Recursively traverses all directories starting from the root directory.
+Validates directory entry sets, entry set checksums
+.Pq Li fe_set_checksum ,
+secondary Stream Extension entries (0xC0), File Name entries (0xC1),
+and 16-bit up-cased file name hashes
+.Pq Li se_name_hash .
+.Nm
+performs the following consistency repairs:
+.Bl -bullet -compact
+.It
+Orphaned secondary directory entries (entries with bit 5 set encountered
+without an active primary entry) are removed.
+.It
+Corrupted directory entry sets with invalid secondary counts or missing
+Stream Extension entries are removed.
+.It
+Directory entry set checksum mismatches are corrected by recomputing
+the 16-bit checksum over the entry set.
+.It
+Incorrect file name hashes are recalculated and updated in the Stream
+Extension entry.
+.It
+General secondary flags
+.Pq Li GeneralSecondaryFlags
+are validated and corrected per exFAT specification section 6.4.2:
+.Va AllocationPossible
+must be set for Stream Extension and Vendor Allocation entries and cleared for
+File Name and Vendor Extension entries;
+.Va NoFatChain
+is verified to be set only when
+.Va AllocationPossible
+is set; and reserved bits (bits 2 through 7) are cleared.
+.It
+File directory entry timestamps and attributes are validated and sanitized per
+exFAT specification section 7.4:
+reserved attribute bits in
+.Va FileAttributes
+are cleared;
+10ms increment values in
+.Va Create10msIncrement
+and
+.Va LastModified10msIncrement
+exceeding 199 (1.99 seconds) are clamped to zero per section 7.4.9;
+UTC offset values in
+.Va CreateUtcOffset ,
+.Va LastModifiedUtcOffset ,
+and
+.Va LastAccessedUtcOffset
+outside the valid range of -128 to +127 per section 7.4.10 are normalized;
+and reserved fields
+.Pq Li Reserved1 No and Li Reserved2
+are zeroed per sections 1.2 and 7.4.
+.It
+File names are validated per exFAT Specification section 7.7.3:
+file names containing invalid characters (code points below 0x0020,
+quotes, asterisks, slashes, colons, angle brackets, question marks,
+backslashes, or pipes) or names consisting entirely of spaces are reported
+as file system errors.
+.It
+Stream
+.Li ValidDataLength
+is clamped to
+.Li DataLength
+for files, and synchronized with
+.Li DataLength
+for directory streams.
+.It
+Superfluous clusters are dropped: zero-length files that allocate clusters
+have their chains freed and allocation flags cleared; files with FAT
+chains exceeding
+.Li DataLength
+are truncated with an
+.Li EXFAT_FAT_EOF
+marker at the expected length and trailing clusters are freed.
+.It
+Cross-linked cluster chains are detected: subsequent claimants referencing
+a cluster already claimed by another file are truncated before the
+collision point.
+.It
+Cluster chains referencing defective clusters
+.Pq Li EXFAT_FAT_BAD
+are truncated at the preceding valid cluster.
+.It
+Cycles in cluster chains are detected and guarded against.
+.It
+Root-only primary directory entries (such as Volume GUID, Volume Label,
+Allocation Bitmap, and Up-Case Table) encountered outside the root directory
+are detected and removed.
+.It
+Unrecognized critical directory entries
+.Pq entry type codes 0x80 through 0x9F
+are detected and offered for removal per exFAT specification section 6.2.1.
+.El
+.It Sy "Phase 4 - Checking Cluster Allocation and Consistency"
+Reconciles the set of referenced clusters tracked during Phase 3 against
+the on-disk Allocation Bitmap.
+Orphaned clusters (marked allocated on disk but unreferenced by any valid
+file or directory) can be recovered into the
+.Pa LOST.DIR
+directory in the root directory.
+If
+.Pa LOST.DIR
+does not exist,
+.Nm
+offers to create it as a standard directory, creating files named after each
+chain's starting cluster number (e.g.,
+.Pa LOST.DIR/12345 ) .
+If a file with that name already exists in
+.Pa LOST.DIR ,
+a unique numeric suffix is appended (e.g.,
+.Pa LOST.DIR/12345_1 )
+to avoid collisions while remaining within single-entry name length bounds.
+Alternatively, orphaned clusters can be cleared in the allocation bitmap.
+Clusters that are in use but marked free on disk are marked allocated.
+Finally, the updated allocation bitmap is committed to disk.
+.El
+.Pp
+Upon clean completion of all checking phases,
+.Nm
+clears the dirty flag
+.Pq EXFAT_VOL_DIRTY
+in both Main and Backup Boot Sectors and recalculates the on-disk
+.Li PercentInUse
+allocation percentage.
+.Pp
+The options are as follows:
+.Bl -tag -width indent
+.It Fl B
+Ignored for
+.Xr fsck 8
+compatibility.
+.It Fl C
+Ignored for
+.Xr fsck 8
+compatibility.
+.It Fl F
+Compatibility check for background file system checking.
+Because exFAT file systems must always be checked in the foreground,
+this option exits immediately with exit status 5.
+.It Fl f
+Force checking of the file system even if it was marked cleanly unmounted.
+.It Fl l
+Display the volume label of the specified file system and exit.
+.It Fl L Ar label
+Set the volume label of the specified file system to
+.Ar label
+and exit.
+If an empty label
+.Pq Qq ""
+is specified, the volume label is deleted.
+The label may be up to 11 characters in length and must not contain
+control characters (0x0000 through 0x001F) or any of:
+.Ql \&" ,
+.Ql * ,
+.Ql / ,
+.Ql : ,
+.Ql < ,
+.Ql > ,
+.Ql \&? ,
+.Ql \e ,
+or
+.Ql | .
+.It Fl n
+Assume a
+.Dq no
+response to all questions; do not open the file system for writing.
+.It Fl p
+Preen mode.
+Perform automatic non-interactive checking and apply minor,
+non-destructive repairs automatically.
+In this mode,
+.Nm
+will restore boot sector checksums, clear invalid ActiveFat flags on
+single-FAT volumes, clear the volume dirty flag,
+update the allocation percentage, remove orphaned secondary directory entries,
+recompute directory entry set checksums, repair file name hashes,
+normalize secondary entry flags, zero reserved fields and attributes,
+sanitize timestamp 10ms increments and UTC offsets,
+clamp valid data lengths, drop superfluous file clusters, reconnect orphaned
+clusters to
+.Pa LOST.DIR
+with collision avoidance, and reconcile the allocation bitmap.
+Potentially destructive actions (such as deleting corrupted directory
+entry sets, truncating cross-linked chains, or truncating at bad clusters)
+are not performed in preen mode unless
+.Fl y
+is also given.
+.It Fl v
+Verbose mode.
+Displays detailed information including volume serial number, file system
+revision, sector and cluster sizing, bad cluster count, and volume label.
+.It Fl y
+Assume a
+.Dq yes
+response to all questions, repairing detected inconsistencies.
+.El
+.Sh EXIT STATUS
+The
+.Nm
+utility exits with one of the following values:
+.Bl -tag -width indent -compact
+.It 0
+The file system is clean and no errors were found.
+.It 1
+Inconsistencies were found and corrected.
+.It 2
+Inconsistencies were corrected; a system reboot is recommended.
+.It 4
+Inconsistencies were found but not corrected.
+.It 5
+Background checking is not supported; foreground check required (returned by
+.Fl F ) .
+.It 8
+An operational error occurred (such as inability to open the device).
+.El
+.Sh SEE ALSO
+.Xr exfat 4 ,
+.Xr fsck 8 ,
+.Xr glabel 8 ,
+.Xr mount_exfat 8 ,
+.Xr newfs_exfat 8
+.Sh HISTORY
+The
+.Nm
+utility first appeared in
+.Fx 15.1 .
+.Sh AUTHORS
+The
+.Nm
+utility was developed for the
+.Fx
+Project.

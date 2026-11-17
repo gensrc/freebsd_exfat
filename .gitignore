@@ -1,0 +1,12 @@
+*.o
+*.pieo
+*.8.gz
+*.debug
+*.full
+.depend
+
+/src/sys/fs/exfat/exfat.ko
+
+/src/sbin/newfs_exfat/newfs_exfat
+/src/sbin/mount_exfat/mount_exfat
+/src/sbin/fsck_exfat/fsck_exfat
